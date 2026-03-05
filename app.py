@@ -1,72 +1,55 @@
 import streamlit as st
-import sqlite3
-import pandas as pd
-import os
+from modules.database import DBManager
+import modules.components as ui
 
-st.set_page_config(page_title="SQLite Viewer Fix", layout="wide")
+st.set_page_config(page_title="SQLite Pro v2", layout="wide")
 
-# 1. 세션 상태 초기화 (DB 연결 유지용)
+# 세션 상태로 DB 경로 고정 (WebSocket 에러 방지)
 if 'db_path' not in st.session_state:
     st.session_state.db_path = None
 
-st.title("🛡️ SQLite View Creator (Fix)")
+st.title("🛡️ SQLite Viewer v2")
 
-# 2. 파일 업로드 및 저장
 uploaded_file = st.sidebar.file_uploader("DB 파일 업로드", type=["db", "sqlite"])
 
 if uploaded_file:
-    # 파일을 한 번만 저장
+    # 1. 파일 세팅
     if st.session_state.db_path is None:
-        temp_name = "database_fix.db"
-        with open(temp_name, "wb") as f:
+        temp_path = "managed_db.db"
+        with open(temp_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.session_state.db_path = temp_name
+        st.session_state.db_path = temp_path
+    
+    db = DBManager(st.session_state.db_path)
 
-    # DB 연결
-    conn = sqlite3.connect(st.session_state.db_path, check_same_thread=False)
-    
-    # --- 사이드바: 쿼리 입력 ---
-    st.sidebar.subheader("✨ VIEW 생성기")
-    st.sidebar.info("예시: CREATE VIEW my_view AS SELECT * FROM 테이블명")
-    sql_input = st.sidebar.text_area("SQL 문 입력", height=200)
-    
-    if st.sidebar.button("명령 실행"):
-        try:
-            # 특수 공백 제거 및 실행
-            clean_sql = sql_input.replace('\xa0', ' ').strip()
-            conn.executescript(clean_sql)
-            conn.commit()
-            st.sidebar.success("✅ 실행 성공! 아래에서 'View'를 선택하세요.")
+    # 2. 사이드바 UI 렌더링
+    query, run_clicked = ui.render_query_editor()
+    if run_clicked:
+        success, msg = db.run_script(query)
+        if success:
+            st.sidebar.success("✅ 반영 완료")
             st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"❌ 실패: {e}")
+        else:
+            st.sidebar.error(f"❌ 오류: {msg}")
 
-    # --- 메인 화면: 데이터 조회 ---
-    # 현재 DB에 있는 모든 테이블과 뷰를 새로고침해서 가져옴
-    tables = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='table';", conn)['name'].tolist()
-    views = pd.read_sql_query("SELECT name FROM sqlite_master WHERE type='view';", conn)['name'].tolist()
+    # 3. 메인 현황판
+    tables = db.get_objects('table')
+    views = db.get_objects('view')
+    ui.render_stats(tables, views)
 
-    st.write("### 📊 DB 내부 현황")
-    col1, col2 = st.columns(2)
-    col1.write(f"**테이블 목록:** {', '.join(tables)}")
-    col2.write(f"**뷰(View) 목록:** {', '.join(views)}")
-
-    st.divider()
-
-    # 데이터 브라우저
-    target_type = st.radio("종류 선택", ["Table", "View"], horizontal=True)
-    target_list = tables if target_type == "Table" else views
-    
-    selected = st.selectbox(f"{target_type} 선택", target_list)
-
-    if selected:
+    # 4. 데이터 뷰어
+    obj_type, selected_obj = ui.render_data_browser(tables, views)
+    if selected_obj:
         try:
-            df = pd.read_sql_query(f'SELECT * FROM "{selected}" LIMIT 100', conn)
-            st.write(f"📂 **{selected}** 데이터 (최대 100행)")
+            df = db.fetch_data(selected_obj)
             st.dataframe(df, use_container_width=True)
         except Exception as e:
-            st.error(f"불러오기 실패: {e}")
+            st.error(f"데이터 로드 실패: {e}")
 
-    conn.close()
+    # 5. 다운로드 버튼
+    st.sidebar.divider()
+    with open(st.session_state.db_path, "rb") as f:
+        st.sidebar.download_button("💾 수정한 DB 저장", f, file_name="updated.db")
+
 else:
-    st.info("사이드바에서 DB 파일을 먼저 올려주세요.")
+    st.info("👈 사이드바에서 파일을 업로드하면 모듈형 시스템이 가동됩니다.")
